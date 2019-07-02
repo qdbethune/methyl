@@ -1,7 +1,7 @@
 #NOTE: Much of this is hard-coded right now. Changes will be required upon scaling.
 
-library(tidyverse)
-library(minfi)
+require(tidyverse)
+require(minfi)
 
 # -- Data location (The "path" for GSE files should just be the identifier [ex: GSE41169])
 datapath = "GSE44667"
