@@ -16,7 +16,7 @@ require("minfi")
 # -- List of 450k array datasets
 horvath_meta_path = "./healthy_tissue_datasets.csv"
 horvath_meta <- read_csv(horvath_meta_path)
-horvath_450k_sets <- horvath_meta$Availability[horvath_meta$Platform == "450K"]
+horvath_450k_sets <- horvath_meta$Availability[horvath_meta$Platform == "450K" & horvath_meta$`Data Use` != "Other"]
 clock_data = "./Horvath_Clock_CpGs.csv"
 
 # TODO: LOOP THROUGH ALL DATASETS
@@ -151,9 +151,9 @@ plot <- ggplot(data = myd, aes(Rel_Pos, Cor)) +
     scale_x_continuous(limits = c(-window_size, window_size),
                        breaks = seq(-window_size, window_size, by = 10000)) +
     theme_minimal() +
-        theme(plot.margin = unit(c(0.75, 1, 0.75, 0.75), "cm")) +
-        theme(plot.title=element_text(hjust=0.5, vjust=3)) +
-        theme(axis.title.x=element_text(vjust=-2)) +
-        theme(axis.title.y=element_text(angle = 90, vjust=3))
+        theme(plot.margin = unit(c(0.75, 1, 0.75, 0.75), "cm"),
+        plot.title=element_text(hjust=0.5, vjust=2, size = 24),
+        axis.title.x=element_text(vjust=-2, size = 16),
+        axis.title.y=element_text(angle = 90, vjust=3, size = 16))
 
-ggsave("plot.png", width = 16, height = 9, dpi = 300, type = "cairo", path = "./Outputs")
+ggsave("plot.png", width = 16, height = 9, dpi = 150, type = "cairo", path = "./Outputs")
