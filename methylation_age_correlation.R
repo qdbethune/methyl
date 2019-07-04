@@ -1,20 +1,36 @@
 #NOTE: Much of this is hard-coded right now. Changes will be required upon scaling.
 
-require(tidyverse)
-require(minfi)
+setwd("/rafalab/qbet/dna_met")
 
-# -- Data location (The "path" for GSE files should just be the identifier [ex: GSE41169])
-datapath = "GSE44667"
-pheno_data = "D:\\Datasets\\Horvath 2013 Data\\TCGA Age Data\\TCGA-BRCA-Clinical.tsv"
-clock_data = "D:\\Datasets\\Horvath 2013 Data\\Horvath_Clock_CpGs.csv"
+# -- Install dependencies on current node
+install.packages("tidyverse", repos='http://cran.us.r-project.org')
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install()
+BiocManager::install("minfi")
+BiocManager::install("IlluminaHumanMethylation450kanno.ilmn12.hg19")
 
-# -- Loading in altered data matrix & converting to GenomicRatioSet
-if (startsWith(basename(datapath), "TCGA")) {
+require("tidyverse")
+require("minfi")
+
+# -- List of 450k array datasets
+horvath_meta_path = "./healthy_tissue_datasets.csv"
+horvath_meta <- read_csv(horvath_meta_path)
+horvath_450k_sets <- horvath_meta$Availability[horvath_meta$Platform == "450K"]
+clock_data = "./Horvath_Clock_CpGs.csv"
+
+# TODO: LOOP THROUGH ALL DATASETS
+data_id = horvath_450k_sets[11]
+
+# -- Locating and loading in altered data matrix & converting to GenomicRatioSet
+if (startsWith(data_id, "TCGA")) {
+    datapath = paste("./Healthy/", data_id, "_450K.csv", sep = "")
+    pheno_data = paste("./TCGA Age Data/", data_id, "-Clinical.tsv", sep = "")
     raw_read   <- read_csv(datapath)
     raw_matrix <- as.matrix(raw_read[,2:ncol(raw_read)])
     rownames(raw_matrix) <- as_vector(raw_read[,1])
     setG <- makeGenomicRatioSetFromMatrix(as.matrix(raw_matrix))
-} else if (startsWith(basename(datapath), "GSE")) {
+} else if (startsWith(data_id, "GSE")) {
     setG <- getGenomicRatioSetFromGEO(datapath)
 } else {
     print("Dataset must be GSE or modified TCGA format")
@@ -27,10 +43,10 @@ sampleNames <- sampleNames(setG)
 
 # -- Phenotype data (including age, sex, etc.)
 #    This function allows you access all phenotypic information available
-if (startsWith(basename(datapath), "TCGA")) {
+if (startsWith(data_id, "TCGA")) {
     pheno <- read.delim(pheno_data, stringsAsFactors = FALSE)
     pheno <- pheno[3:nrow(pheno),]
-} else if (startsWith(basename(datapath), "GSE")) {
+} else if (startsWith(data_id, "GSE")) {
     pheno <- pData(setG)
 } 
 
@@ -68,19 +84,19 @@ dat <- dat %>%
 # -- Filtering based on chromosome and distance from CpG of interest
 horvath_Probe <- as.character(horvath_clock[2, 1])
 horvath_Pos <- dat$Pos[dat$Probe == horvath_Probe]
-
+window_size = 50000
 dat <- dat %>%
-    filter(Chr == horvath_clock$Chr[2] & abs(Pos - horvath_Pos) <= 50000) %>%
+    filter(Chr == horvath_clock$Chr[2] & abs(Pos - horvath_Pos) <= window_size) %>%
     mutate(Rel_Pos = Pos - horvath_Pos)
 
 # -- Getting age data for each sample
-if (startsWith(basename(datapath), "TCGA")) {
+if (startsWith(data_id, "TCGA")) {
     tmp <- pheno %>% 
         as_tibble() %>%
-        select(bcr_patient_barcode, age_at_diagnosis) %>%
-        mutate(age_at_diagnosis = as.numeric(age_at_diagnosis)) %>%
-        setNames(c("Sample", "Age"))
-} else if (startsWith(basename(datapath), "GSE")) {
+        select(bcr_patient_barcode, starts_with("age_at")) %>%
+        setNames(c("Sample", "Age")) %>%
+        mutate(Age = as.numeric(Age))
+} else if (startsWith(data_id, "GSE")) {
     tmp <- pheno %>% 
         as_tibble() %>%
         mutate(Sample = rownames(pheno)) %>%
@@ -90,7 +106,7 @@ if (startsWith(basename(datapath), "TCGA")) {
 }
 
 # -- Standardizing GSE age data to years
-if (startsWith(basename(datapath), "GSE")) {
+if (startsWith(data_id, "GSE")) {
     age_type = colnames(pheno[contains("age", var = colnames(pheno))])
     
     if (grepl("day", age_type)) {
@@ -99,8 +115,8 @@ if (startsWith(basename(datapath), "GSE")) {
         tmp$Age <- tmp$Age * (7 / 365)
     } else if (grepl("month", age_type)) {
         tmp$Age <- tmp$Age / 12
-    } else {}
-}
+    } 
+} 
 
 # -- Joining the genomic data with the phenotype data
 dat <- dat %>%
@@ -123,7 +139,7 @@ myd <- tmp %>%
 # -- Plotting the results
 horvath_Cor = myd$Cor[myd$Rel_Pos == 0]
 
-ggplot(data = myd, aes(Rel_Pos, Cor)) +
+plot <- ggplot(data = myd, aes(Rel_Pos, Cor)) +
     geom_point(alpha=0.30) +
     geom_point(aes(0, horvath_Cor), color = "red", size = 3) +
     geom_hline(yintercept = 0, color="red", lty=2) +
@@ -132,8 +148,12 @@ ggplot(data = myd, aes(Rel_Pos, Cor)) +
     ylab("Pearson Correlation") +
     scale_y_continuous(limits = c(-1,1),
                        breaks = seq(-1,1,by=0.20)) +
-    scale_x_continuous(limits = c(-50000, 50000),
-                       breaks = seq(-50000, 50000, by = 10000)) +
+    scale_x_continuous(limits = c(-window_size, window_size),
+                       breaks = seq(-window_size, window_size, by = 10000)) +
     theme_minimal() +
-    theme(plot.title=element_text( hjust=0.5, vjust=0.5, face='bold'))
+        theme(plot.margin = unit(c(0.75, 1, 0.75, 0.75), "cm")) +
+        theme(plot.title=element_text(hjust=0.5, vjust=3)) +
+        theme(axis.title.x=element_text(vjust=-2)) +
+        theme(axis.title.y=element_text(angle = 90, vjust=3))
 
+ggsave("plot.png", width = 16, height = 9, dpi = 300, type = "cairo", path = "./Outputs")
