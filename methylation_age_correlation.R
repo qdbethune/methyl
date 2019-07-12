@@ -1,3 +1,5 @@
+
+
 setwd("/rafalab/qbet/dna_met")
 
 require("tidyverse")
@@ -89,7 +91,7 @@ for (data_id in horvath_450k_sets) {
     
     # -- Filtering based on chromosome and distance from CpG of interest
     horvath_Pos <- illumina_sheet$MAPINFO[illumina_sheet$IlmnID == horvath_cpg]
-    window_size = 10000
+    window_size = 100000
     dat <- dat %>%
         filter(Chr == horvath_clock$Chr[horvath_clock$CpGmarker == horvath_cpg] & abs(Pos - horvath_Pos) <= window_size) %>%
         mutate(Rel_Pos = Pos - horvath_Pos)
