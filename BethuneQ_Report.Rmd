@@ -1,0 +1,155 @@
+---
+title: "Age Prediction Using Regional Methylation Measurements"
+author: "Quentin D. Bethune"
+date: "8/1/2019"
+output: pdf_document
+dev: pdf
+---
+
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# For the sake of reproducibility
+set.seed(28)
+
+
+
+require(tidyverse)
+require(minfi)
+require(doParallel)
+
+# -- Methylation data matrix file (normalized) and age data matrix
+data_filepath = "./Collated Data/Test_Unnormalized_450k.csv"
+age_filepath = "./Collated Data/Test_Age_450k.csv"
+
+# -- Loading in and formatting collated methylation data processed by pipeline
+data_tibble <- read_csv(data_filepath)
+genome_tibble <- select(data_tibble, Probe, Pos, Chr, Probe_type)
+beta_tibble <- select(data_tibble, -Probe, -Pos, -Chr, -Probe_type)
+NA_vector <- apply(beta_tibble, MARGIN = 1, FUN = function(x) sum(is.na(x)))
+print(paste("The data matrix has a total of", sum(NA_vector), "missing values."))
+sampleList <- colnames(beta_tibble)
+
+
+# -- Loading in collated age data and arranging to match order of samples in beta value matrix
+age_data = read_csv(age_filepath)
+age_data <- age_data %>%
+    filter(Sample %in% sampleList) %>%
+    arrange(match(Sample, sampleList))
+
+beta_tibble <- beta_tibble %>%
+    select(age_data$Sample)
+
+# -- Constructing minfi GenomicRatioSet object using methylation matrix
+beta_matrix <- as.matrix(beta_tibble)
+rownames(beta_matrix) <- data_tibble$Probe
+setG <- makeGenomicRatioSetFromMatrix(as.matrix(beta_matrix))
+rm(data_tibble, beta_tibble, beta_matrix, NA_vector)
+
+
+# -- Creating age design matrix for bump hunting.
+ages <- age_data$Age
+designMatrix <- model.matrix(~ ages)
+rownames(designMatrix) <- age_data$Sample
+```
+
+\section{Background}
+
+The impetus for this work stems from the existing literature on biological age prediction. While humans experience aging through biological growth and decay in tissue function, modelling the changes underlying aging directly is more difficult than one might expect. One way to do so which is quite successful is by utilizing measurements of DNA methylation. Multiple models of "epigenetic clocks" using methylation profiles have been published with varying degrees of accuracy. The most effective of these was published by Steve Horvath in 2013, and is notably the first to work accurately across most human tissue types.
+
+Each of the exising models utilizes measurements from single CpG sites scattered across the genome, with no necessary relationship between one another. For instance, Horvath's model uses methylation measurements from 353 CpGs. Specifically, he regressed methylation data from ~20,000 CpGs onto a function of biological age. The ultimate goal of this project is to explore whether one can predict biological age using not single, unrelated CpGs, but by instead observing the grouped methylation of CpGs within defined regions of the genome. In principle, this should improve model accuracy if there are broad regional changes in methylation related to aging. 
+
+\section{Datasets}
+
+Our datasets are publicly available Illumina 450k Methylation Beadchip data from a variety of cell and tissue types. The total sample count is $n = 2612$, using data from 276132 probes with 20 or fewer missing data across all samples. The remaining missing data were imputed via k-nearest neightbors imputation designed for genomic data, which functions as mean imputation localized to a specific area of the genome. Each point in our data is a $\beta$-value, acting as a sample proportion for methylation of a given CpG, and is thus subject to the constraint $0 \le \beta \le 1$.
+
+\section{Methodology \& Results}
+
+Our analysis utilizes the data structures and tools provided by the minfi package in Bioconductor for R. This allows us easy access to probe annotation metadata, most importantly genomic location. We first group CpGs into a cluster and summarize each cluster with a single methylation measurement, using the mean by default. For reference, these clusters are no bigger than a few kilobases wide, and depending on the CpG type (island vs sea) it may be the only one in a given cluster. An example of the genomic data for these clusters is shown below:
+
+```{r, echo = FALSE}
+source("../scripts/cpgcollapse_fix.R")
+collapse <- new_cpgCollapse(setG, what = "Beta", maxGap = 500, maxClusterWidth = 5000, verbose = FALSE)
+granges(collapse$object)[12:15]
+```
+
+These collapsed CpGs can then be used to determine large-scale differentially methylated regions (DMRs) varying with age. We utilize the bumphunter package to ascertain these DMRs. The simple model we assume using this package is:
+
+$$M_{ij} = \beta_{0}(l_j) + \beta_{1}(l_j)X_j + \epsilon_{ij}$$
+
+where $M_{ij}$ is the $\beta$-value for $i^{th}$ sample at the $j^{th}$ location $l_j$, and $X_j$ is the value of age for this sample. More details on the statistical model are available in the bumphunter documentation. The age-related function of CpG position is assumed to be zero across most of the genome i.e. $\beta_{1} = 0$. Bumphunter performs similar regressions for each CpG within the dataset. We're interested in the large regions over which $\beta_{1} \neq 0$ for our collapsed CpGs. Bumphunter groups these regions into "bumps" and computes p-values for each CpG along with a family-wise error rate (FWER) for each bump. These tests are permutation-based by default, done by simply scrambling the input data. 
+
+Thus, we apply bumphunter to our collapsed CpGs with a large smoothing window for bump-detection and select regions with $FWER \le \alpha = 0.05$, though this control is typically more sophisticated. Below is a plot of the resulting regression coefficients for the collapsed CpGs within one of our statistically significant bumps.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+age_dmrs <- blockFinder(collapse$object, design = designMatrix, cutoff = 0.001, B = 10, what = "Beta", verbose = FALSE)
+
+# -- Filtering data by FWER, currently using a static cutoff
+FWER_CUTOFF = 0.05
+dmr_table <- age_dmrs$table %>%
+    filter(fwer <= FWER_CUTOFF)
+
+dmr_table$range <- dmr_table$end - dmr_table$start
+collapsed_data <- collapse$object
+
+# -- Mapping coefficients produced by bumphunter to collapsed cpgs
+gr <- collapsed_data %>%
+    granges() %>%
+    as_tibble %>%
+    bind_cols(coef = age_dmrs$coef) %>%
+    mutate(range = end - start + 1)
+
+# -- Info to be used for filtering and plotting
+dmr_chr = dmr_table$chr[2]
+dmr_start = dmr_table$start[2]
+dmr_end = dmr_table$end[2]
+dmr_number = as.integer(rownames(dmr_table)[2])
+
+# -- Filter collapsed cpgs to only include those in a given "block"
+curr_gr <- gr %>%
+    filter(seqnames == dmr_chr, start >= dmr_start, start <= dmr_end)
+
+# Generate and save plot
+plot <- ggplot(data = curr_gr, aes(start, coef)) +
+    stat_smooth(se = FALSE, method = "lm") + 
+    geom_point(alpha=0.4, size = 3) +
+    geom_point(alpha=0.4, size = 3, pch=1) +
+    geom_hline(yintercept = 0, color="red", lty=2, size=0.80) +
+    ggtitle(paste("Regression coefficients of collapsed cpgs on", dmr_chr)) +
+    xlab(paste("Position on", dmr_chr)) +
+    ylab("Bumphunter Regression Coefficient") +
+    scale_y_continuous(limits = c(-0.01,0.01)) +
+    scale_x_continuous(limits = c(dmr_start, dmr_end)) +
+    
+    theme_minimal() +
+    theme(plot.margin = unit(c(0.75, 1, 0.75, 0.75), "cm"),
+          plot.title=element_text(hjust=0.5, vjust=2),
+          axis.title.x=element_text(vjust=-2),
+          axis.title.y=element_text(angle = 90, vjust=3),
+          axis.text = element_text(color = "black"))
+
+plot
+```
+
+The line is simply a least-squares regression for the points on the plot, corresponding to the cluster-by-cluster change in methylation per year. This region, and almost all others found by our procedure, trend negatively with age. One can imagine this large region slowly becoming demethylated as an individual ages, resulting in gradual decondensing of the chromatin. One can imagine the destabilizing impact that this would have at the molecular level as the subject ages. This plot is of only one such region, with 385 being returned by bumphunter in total. 
+
+\section{Discussion}
+
+To improve the robustness of any potential model stemming from this work, gaps in the origin of our datasets should be filled. For instance, I did not acquire 450k data coming from brain tissue samples. Every dataset of differing origin added thus far has culled the pool of statistically significant predicting regions. Additionally, I could not successfully employ a normalization technique on our data to remove the measurement bias associated with the Type II probes used in the Illumina 450k Beadchip array. While a more minor point, this is important to maximizing the accuracy of any resulting models. The technique I had been working to utilize was published as "A beta-mixture quantile normalization method for correcting probe design bias in Illumina Infinium 450k DNA methylation data" by Teschendorff et al. in 2012. Finally, it is likely that regional methylation does not relate linearly with age. For instance, Horvath's model utilized regression onto biological age only after transformation by the following continuous function:
+
+$$
+F(x) = 
+    \begin{cases} 
+        \displaystyle log(\frac{x + 1} {a + 1}) & \text{if } x \leq a \\
+        \\
+        \displaystyle \frac {x - a} {a + 1} & \text{if } x > a
+    \end{cases}
+\newline
+\; a = adult\;age
+$$
+
+In my eight short weeks at HSPH we've covered what could be considered a substantial amount of ground. Not included in this short report are details regarding the acquisition of data and our exploratory data analysis. These were covered in my talk at the Pipelines into Biostatistics Symposium, but are only of cursory interest. It has been an honor and a pleasure to work on this project, and I am excited for the possibilities the future may hold for it. 
+
+
+
